@@ -1,0 +1,138 @@
+/**
+ * PROJETO: Automação de Clipping Acadêmico (Estrutura A-O)
+ * Ajustado para preservação de capitalização (O Globo, Elon Musk, etc.)
+ */
+
+function preencherDadosAutomaticos() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getActiveSheet();
+
+  // --- MAPEAMENTO DAS COLUNAS ---
+  var colReferencia = 1;   // A
+  var colVeiculo = 2;      // B
+  var colTitulo = 3;       // C
+  var colLinks = 4;        // D
+  var colData = 5;         // E
+  var colPais = 6;         // F
+  var colCidade = 7;       // G
+  var colIdioma = 8;       // H
+  var colTexto = 9;        // I
+  var colAssinatura = 11;  // K (Onde está o menu "Sim/Não")
+  var colAutor = 12;       // L (Onde está o nome do autor)
+
+  var primeiraLinha = 2; 
+  var ultimaLinha = sheet.getLastRow();
+  
+  if (ultimaLinha < primeiraLinha) return;
+
+  var numLinhas = ultimaLinha - primeiraLinha + 1;
+  var dadosEntrada = sheet.getRange(primeiraLinha, 1, numLinhas, colAutor).getValues();
+
+  for (var i = 0; i < dadosEntrada.length; i++) {
+    var linhaAtual = primeiraLinha + i;
+    
+    var veiculoPlanilha = dadosEntrada[i][colVeiculo - 1];
+    var url = dadosEntrada[i][colLinks - 1];
+    var dataPublicacao = dadosEntrada[i][colData - 1];
+    var cidade = dadosEntrada[i][colCidade - 1];
+    
+    var temAssinaturaRaw = dadosEntrada[i][colAssinatura - 1];
+    var temAssinatura = String(temAssinaturaRaw).trim().toLowerCase();
+    
+    var nomeAutor = dadosEntrada[i][colAutor - 1];
+
+    if (url && url.toString().startsWith("http")) {
+      var extraido = extrairDadosG1(url);
+      
+      if (!veiculoPlanilha || String(veiculoPlanilha).trim() === "") {
+        veiculoPlanilha = extrairNomeDoVeiculo(url);
+        sheet.getRange(linhaAtual, colVeiculo).setValue(veiculoPlanilha);
+      }
+
+      sheet.getRange(linhaAtual, colTitulo).setValue(extraido.titulo);
+      sheet.getRange(linhaAtual, colTexto).setValue(extraido.texto);
+
+      var celulaTextoA1 = sheet.getRange(linhaAtual, colTexto).getA1Notation();
+      sheet.getRange(linhaAtual, colIdioma).setFormula("=DETECTLANGUAGE(" + celulaTextoA1 + ")");
+
+      var autorParaRef = "";
+      if (temAssinatura === "sim" && nomeAutor && String(nomeAutor).trim() !== "") {
+        autorParaRef = String(nomeAutor).trim();
+      }
+
+      var referenciaFinal = gerarReferenciaABNT(autorParaRef, url, extraido.titulo, dataPublicacao, cidade, veiculoPlanilha);
+      sheet.getRange(linhaAtual, colReferencia).setValue(referenciaFinal);
+    }
+  }
+  SpreadsheetApp.getUi().alert("Processado com sucesso!");
+}
+
+function extrairNomeDoVeiculo(url) {
+  try {
+    var hostname = new URL(url).hostname;
+    var nome = hostname.replace(/^www\./i, '').split('.')[0].toUpperCase();
+    return (nome === "OGLOBO") ? "O GLOBO" : nome;
+  } catch (e) { return "N/D"; }
+}
+
+function extrairDadosG1(url) {
+  var dados = { texto: "Texto não encontrado", titulo: "Título Desconhecido" };
+  try {
+    var resposta = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    var html = resposta.getContentText();
+    var tituloMatch = html.match(/<title[^>]*>(.*?)<\/title>/i);
+    if (tituloMatch) {
+      // Limpa títulos do Globo que trazem o nome do jornal no final
+      dados.titulo = tituloMatch[1].split('|')[0].split(' - Jornal O Globo')[0].split(' - O Globo')[0].trim();
+    }
+    var paragrafos = html.match(/<p[^>]*>(.*?)<\/p>/g);
+    if (paragrafos) {
+      dados.texto = paragrafos.map(p => p.replace(/<[^>]+>/g, "").trim()).filter(t => t.length > 20).join("\n\n");
+    }
+    return dados;
+  } catch (e) { return dados; }
+}
+
+function gerarReferenciaABNT(autor, url, titulo, dataPublicacao, cidade, veiculo) {
+  var site = veiculo ? String(veiculo).trim() : "O GLOBO";
+  // Força "O GLOBO" em maiúsculas se for o veículo padrão
+  if (site.toUpperCase().replace(/\s/g, "") === "OGLOBO") site = "O GLOBO";
+
+  var autorParte = "";
+  var tituloFormatado = "";
+
+  // 1. Tratamento do Autor
+  if (autor && autor !== "" && autor !== "undefined") {
+    var partes = autor.trim().split(/\s+/);
+    if (partes.length >= 2) {
+      var sobrenome = partes.pop().toUpperCase();
+      autorParte = sobrenome + ", " + partes.join(" ") + ". ";
+    } else {
+      autorParte = autor.toUpperCase() + ". ";
+    }
+    // REMOVIDO .toLowerCase() - Agora mantém "Elon Musk"
+    tituloFormatado = titulo.trim();
+  } else {
+    // 2. Sem autor: Primeira palavra em CAIXA ALTA
+    var pal = titulo.trim().split(" ");
+    if (pal.length > 0) {
+      pal[0] = pal[0].toUpperCase();
+      tituloFormatado = pal.join(" ");
+    }
+  }
+
+  // 3. Formatação da Data
+  var dRef = "[s.d.]";
+  if (dataPublicacao instanceof Date && !isNaN(dataPublicacao.getTime())) {
+    var meses = ["jan.", "fev.", "mar.", "abr.", "maio", "jun.", "jul.", "ago.", "set.", "out.", "nov.", "dez."];
+    dRef = dataPublicacao.getDate() + " " + meses[dataPublicacao.getMonth()] + " " + dataPublicacao.getFullYear() + ".";
+  }
+
+  // 4. Data de Acesso
+  var hoje = new Date();
+  var mesesAcesso = ["jan.", "fev.", "mar.", "abr.", "maio", "jun.", "jul.", "ago.", "set.", "out.", "nov.", "dez."];
+  var dataAcesso = hoje.getDate() + " " + mesesAcesso[hoje.getMonth()] + " " + hoje.getFullYear();
+
+  // Retorno da referência montada (Ajustado para o padrão Miriam Leitão solicitado)
+  return autorParte + tituloFormatado + ". " + site + ", " + dRef + " Disponível em: " + url + ". Acesso em: " + dataAcesso + ".";
+}
